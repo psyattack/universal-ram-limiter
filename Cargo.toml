@@ -1,0 +1,28 @@
+[package]
+name = "ram-limiter"
+version = "1.0.0"
+edition = "2021"
+description = "RAM Limiter — trim working set of any Windows application"
+license = "MIT"
+authors = ["psyattack"]
+
+[dependencies]
+native-windows-gui = { version = "1.0.13", features = ["default"] }
+winapi = { version = "0.3", features = [
+    "winuser", "wingdi", "winbase", "libloaderapi", "processthreadsapi",
+    "errhandlingapi", "winerror", "commctrl", "commdlg", "sysinfoapi",
+    "shellapi", "psapi", "memoryapi", "handleapi", "tlhelp32", "winnt",
+    "winreg",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs-next = "2"
+
+[build-dependencies]
+winresource = { version = "0.1", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
