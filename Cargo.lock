@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "ram-limiter"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "dirs-next",
  "native-windows-gui",
