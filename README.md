@@ -33,6 +33,13 @@ RAM Limiter helps you manage memory usage on Windows by automatically calling `S
 - **Simple GUI** — Add applications by browsing for .exe files or picking from running processes
 - **Visual feedback** — See real-time RAM usage for monitored applications
 - **Per-app control** — Enable/disable limiting for each application individually
+- **Custom trim interval** — Tune how often the worker runs (100 ms – 600 000 ms)
+- **Master on/off switch** — Pause every limiter at once without touching individual apps
+- **Skip focused windows** — Leave the foreground process alone to avoid stutter during active use
+- **Soft limit mode** — Optionally cap a process working set at a fixed size (e.g. 500 MB) instead of trimming to the minimum
+- **Trigger processes** — Only act while one of a list of "important" apps is running
+- **Page-fault & disk-write stats** — See cumulative page-fault counts and an estimate of bytes pushed into the page file
+- **Profiles / presets** — Save and reload named configurations for different scenarios (gaming, idle, work, …)
 - **Icon extraction** — Automatically displays application icons in the list
 - **Autostart** — Optional Windows startup integration (runs minimized to tray)
 - **Persistent config** — Settings saved to `%APPDATA%\RamLimiter\config.json`
@@ -68,7 +75,7 @@ The compiled binary will be at `target/release/ram-limiter.exe`.
 ### Adding Applications
 
 1. **Browse for executable:**
-   - Click "+ Browse .exe…"
+   - Click "Browse .exe…"
    - Select the application's .exe file
    - The app will be added to the list with its icon
 
@@ -80,8 +87,39 @@ The compiled binary will be at `target/release/ram-limiter.exe`.
 ### Managing Applications
 
 - **Enable/Disable:** Double-click an application in the list to toggle limiting
-- **Remove:** Select an application and click "Remove Selected"
-- **View RAM usage:** The "RAM Usage" column shows current memory consumption
+- **Configure / remove:** Right-click a row to open the context menu (toggle, set/clear soft limit, remove)
+- **View RAM usage:** The "RAM" column shows the current working-set size for the app
+- **Page-fault counter:** The "Page faults" column shows the cumulative page-fault count for each monitored app
+
+### Master switch & global settings
+
+The toolbar exposes the limiter-wide settings:
+
+- **Master enabled** — When unchecked, no trimming or capping happens, no matter what individual apps say. The status line shows `master switch OFF` so it's obvious limiting is paused.
+- **Skip focused** — When checked, the limiter leaves the process owning the foreground window alone so active interaction stays smooth.
+- **Interval (ms)** — How often the worker runs. Smaller = more aggressive trimming + more disk wear; larger = gentler. Range: 100 ms – 600 000 ms (10 minutes).
+- **Triggers** — Comma-separated list of process names (e.g. `chrome, discord`). When non-empty, the limiter only acts while at least one of these processes is running. Leave empty for "always on".
+
+### Soft limit mode
+
+By default the limiter trims a process working set down to its minimum, asking Windows to swap most pages out. For some apps this is too aggressive and causes stuttering. Right-click a row → **Set soft limit…**, type a value in MB, and the limiter will instead cap the working set at that size — pages above the cap are evicted, pages below stay resident. **Clear soft limit** restores trim mode.
+
+### Profiles
+
+Click **Profiles…** to open the profile manager. A profile captures the full set of monitored apps plus the master/skip-focused/interval/triggers settings, all under a chosen name. Use cases:
+
+- "Gaming" — only Chrome, Discord, Spotify enabled, 1.5 s interval, trigger on `<your-game>.exe`.
+- "Office" — soft-limit Outlook to 800 MB, master enabled, skip focused.
+- "Idle" — master enabled, no triggers, 10 s interval, trim everything.
+
+Activate a profile to load it. Save the current settings as a new profile from the same view. Deletion just removes the saved snapshot — your current settings are unaffected.
+
+### Live statistics
+
+Below the app list:
+
+- **Status line** — total RAM across monitored processes, how many are active, master-switch state.
+- **Stats line** — `Trimmed: <N MB>` is an estimate of bytes the limiter pushed to the page file (sum of working-set drops at each trim cycle); `Page faults: <N>` is the cumulative page-fault count across all monitored processes.
 
 ### Autostart
 
@@ -90,10 +128,17 @@ Check "Start with Windows" to launch RAM Limiter automatically on login. The app
 ### How It Works
 
 RAM Limiter runs a background thread that:
-1. Enumerates all running processes every 1.5 seconds
-2. For each enabled application, calls `SetProcessWorkingSetSize(handle, -1, -1)`
-3. This tells Windows to trim the working set to its minimum size
-4. Windows moves unused memory pages to the page file, freeing physical RAM
+1. Enumerates all running processes once per **trim interval** (configurable; defaults to 1.5 s).
+2. For each enabled application:
+   - If a **soft limit** is set, calls `SetProcessWorkingSetSizeEx(handle, 1 MiB, soft_limit, 0)` — the OS keeps the working set under the cap.
+   - Otherwise calls `SetProcessWorkingSetSizeEx(handle, -1, -1, 0)` — Windows trims the working set to its minimum.
+3. Windows moves the affected pages to the page file, freeing physical RAM.
+4. The worker also reads `PROCESS_MEMORY_COUNTERS` to feed the page-fault and disk-write statistics in the UI.
+
+The worker honors:
+- The **master switch** (no work happens at all when off).
+- **Triggers** (no work happens unless one of the configured trigger processes is running).
+- **Skip focused** (the foreground process is left alone, even if it would otherwise be limited).
 
 ## 🛠️ Technical Details
 
@@ -139,12 +184,36 @@ Example:
     "C:\\Program Files\\App\\app.exe": {
       "exe_path": "C:\\Program Files\\App\\app.exe",
       "display_name": "My Application",
-      "enabled": true
+      "enabled": true,
+      "soft_limit_mb": 500
     }
   },
-  "autostart": false
+  "autostart": false,
+  "trim_interval_ms": 1500,
+  "global_enabled": true,
+  "skip_focused": true,
+  "triggers": ["chrome", "discord"],
+  "active_profile": "Gaming",
+  "profiles": {
+    "Gaming": {
+      "apps": { "...": "..." },
+      "trim_interval_ms": 1500,
+      "global_enabled": true,
+      "skip_focused": true,
+      "triggers": ["yourgame"]
+    },
+    "Idle": {
+      "apps": { "...": "..." },
+      "trim_interval_ms": 10000,
+      "global_enabled": true,
+      "skip_focused": false,
+      "triggers": []
+    }
+  }
 }
 ```
+
+All new top-level fields are optional and fall back to sensible defaults when missing, so configs from older versions continue to work.
 
 ## 🐛 Troubleshooting
 
@@ -181,20 +250,20 @@ Aggressive memory trimming can significantly increase disk wear, especially on S
 - Some executables don't contain embedded icons
 - The app will still work, just without the visual icon
 
-## 🚧 TODO / Planned Features
+## 🚧 Roadmap
 
-Future improvements planned for RAM Limiter:
+All previously-planned features have shipped:
 
-- [ ] **Custom trim interval** — Allow users to configure the trim frequency (e.g., 1s, 5s, 10s, 30s)
-- [ ] **Launch on specific app start** — Automatically start limiting when certain applications are launched
-- [ ] **Global on/off switch** — Master toggle to pause all limiting without disabling individual apps
-- [ ] **Soft limit mode** — Set a specific memory limit (e.g., 500 MB) instead of trimming to minimum
-- [ ] **Skip focused windows** — Don't trim applications that currently have focus to avoid stuttering during active use
-- [ ] **Page fault monitoring** — Display page fault statistics to help users identify performance issues
-- [ ] **Disk write statistics** — Show estimated disk writes caused by memory trimming
-- [ ] **Profiles/presets** — Save and load different limiting configurations for different scenarios
+- [x] **Custom trim interval** — Configure the trim frequency in milliseconds (toolbar input).
+- [x] **Launch on specific app start** — Trigger processes gate the limiter; configurable from the toolbar.
+- [x] **Global on/off switch** — "Master enabled" checkbox in the toolbar.
+- [x] **Soft limit mode** — Per-app working-set cap (right-click → *Set soft limit…*).
+- [x] **Skip focused windows** — "Skip focused" checkbox in the toolbar.
+- [x] **Page fault monitoring** — Per-app counter column + total in the stats line.
+- [x] **Disk write statistics** — Estimated bytes pushed to the page file in the stats line.
+- [x] **Profiles / presets** — Profile manager with activate / save current / delete.
 
-Contributions are welcome! Feel free to open an issue or pull request for any of these features.
+Contributions for further improvements are welcome — feel free to open an issue or pull request.
 
 ## 📄 License
 
@@ -209,7 +278,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📧 Contact
 
 For bugs, feature requests, or questions, please open an issue on GitHub.
-
----
-
-**Remember:** This tool modifies system memory behavior. Always test with non-critical applications first and monitor system stability.
